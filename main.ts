@@ -1,115 +1,105 @@
-// main.ts - entrypoint for the news-image-20261124 program.
+// main.ts - the entrypoint for the news-image-20261124 program.
 //
-// The front page is drawn at authoring time (see compose.py) and shipped
-// in this repository as entry.png. This program's whole job is to carry
-// that fixed image into the grader's output directory, unchanged, so both
-// grader runs write byte-identical output.
+// The front page is rendered at authoring time by compose.py and shipped
+// in this repository as entry.png. This program does one thing: carry
+// that fixed image into the grader's output directory unchanged, so the
+// two grader runs each write byte-identical output.
 //
-// Before copying, it validates the image against the competition caps: a
-// real PNG (magic bytes + IHDR + IEND), at most 1024 x 1024 px and at
-// most 1 MiB. Anything off fails loudly instead of shipping a bad image.
-// After writing, it reads the copy back and compares it byte for byte
-// with the source, so a truncated write can never slip through.
+// It checks the image against the competition's caps before copying - a
+// genuine PNG (magic bytes, an IHDR chunk, an IEND chunk), no more than
+// 1024 by 1024 pixels and no more than 1 MiB - and fails loudly on
+// anything off, instead of shipping a bad image. After the write it
+// reads the copy back and compares it byte for byte with the source, so
+// a truncated write can never slip through.
 //
-// Node 22 standard library only. No network, no dependencies.
+// Node 22, standard library only. No network access, no dependencies.
 
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const SOURCE_NAME = "entry.png";
-const OUTPUT_NAME = "entry.png";
-const MAX_BYTES = 1024 * 1024;
-const MAX_SIDE = 1024;
+const IMAGE = "entry.png";
+const BYTE_CAP = 1024 * 1024;
+const SIDE_CAP = 1024;
 
-// The eight PNG magic bytes every PNG file starts with.
-const PNG_MAGIC = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
+// Every PNG file starts with these eight magic bytes.
+const MAGIC = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
 
-function fail(message) {
-  console.error("main.ts: " + message);
+function die(msg) {
+  console.error("main.ts: " + msg);
   process.exit(1);
 }
 
-// Where does entry.png live? Next to this script first; the working
-// directory is the fallback, so the program still works when it is run
-// from the repository root with a different script location.
-function findSource() {
+// Find entry.png: next to this script first, then the working directory,
+// so the program still works when run from the repository root while the
+// script itself lives somewhere else.
+function locateImage() {
   const here = dirname(fileURLToPath(import.meta.url));
-  const candidates = [join(here, SOURCE_NAME), join(process.cwd(), SOURCE_NAME)];
-  for (const candidate of candidates) {
+  for (const candidate of [join(here, IMAGE), join(process.cwd(), IMAGE)]) {
     try {
-      return { path: candidate, bytes: readFileSync(candidate) };
+      return readFileSync(candidate);
     } catch (err) {
       if (err.code !== "ENOENT") {
-        fail("cannot read " + candidate + ": " + err.message);
+        die("cannot read " + candidate + ": " + err.message);
       }
     }
   }
-  fail("could not find " + SOURCE_NAME + " next to main.ts or in " + process.cwd());
+  die("could not find " + IMAGE + " next to main.ts or in " + process.cwd());
 }
 
-// Parse the PNG header out of the buffer: magic, then the IHDR chunk that
-// carries the width and height. Returns { width, height }.
-function readPngSize(bytes) {
+// Read the width and height out of the PNG header, checking the magic
+// bytes, the IHDR chunk and the trailing IEND chunk on the way.
+function pngDimensions(bytes) {
   if (bytes.length < 33) {
-    fail(SOURCE_NAME + " is too short to be a PNG (" + bytes.length + " bytes)");
+    die(IMAGE + " is too short to be a PNG (" + bytes.length + " bytes)");
   }
-  for (let i = 0; i < PNG_MAGIC.length; i++) {
-    if (bytes[i] !== PNG_MAGIC[i]) {
-      fail(SOURCE_NAME + " does not start with the PNG magic bytes");
+  for (let i = 0; i < MAGIC.length; i++) {
+    if (bytes[i] !== MAGIC[i]) {
+      die(IMAGE + " does not start with the PNG magic bytes");
     }
   }
-  const chunkType = bytes.toString("latin1", 12, 16);
-  if (chunkType !== "IHDR") {
-    fail(SOURCE_NAME + " has no IHDR chunk where one belongs (found " + chunkType + ")");
+  if (bytes.toString("latin1", 12, 16) !== "IHDR") {
+    die(IMAGE + " has no IHDR chunk where one belongs");
   }
   const width = bytes.readUInt32BE(16);
   const height = bytes.readUInt32BE(20);
-  // A PNG ends with a 12-byte IEND chunk: 4 zero length bytes, the four
-  // letters IEND, then a 4-byte CRC. The letters sit 8 bytes from the end.
-  const tail = bytes.toString("latin1", bytes.length - 8, bytes.length - 4);
-  if (tail !== "IEND") {
-    fail(SOURCE_NAME + " does not end with an IEND chunk (found " + tail + ")");
+  // A PNG ends with a 12-byte IEND chunk: four zero length bytes, the
+  // four letters IEND, then a 4-byte CRC. The letters sit 8 bytes from
+  // the end of the file.
+  if (bytes.toString("latin1", bytes.length - 8, bytes.length - 4) !== "IEND") {
+    die(IMAGE + " does not end with an IEND chunk");
   }
   return { width, height };
 }
 
-function main() {
-  const source = findSource();
-  const bytes = source.bytes;
+function run() {
+  const bytes = locateImage();
 
-  if (bytes.length > MAX_BYTES) {
-    fail(SOURCE_NAME + " is " + bytes.length + " bytes, over the 1 MiB cap");
+  if (bytes.length > BYTE_CAP) {
+    die(IMAGE + " is " + bytes.length + " bytes, over the 1 MiB cap");
   }
-  const size = readPngSize(bytes);
-  if (size.width > MAX_SIDE || size.height > MAX_SIDE) {
-    fail(
-      SOURCE_NAME + " is " + size.width + "x" + size.height +
-      ", over the 1024x1024 cap"
-    );
+  const { width, height } = pngDimensions(bytes);
+  if (width > SIDE_CAP || height > SIDE_CAP) {
+    die(IMAGE + " is " + width + "x" + height + ", over the 1024x1024 cap");
   }
-  if (size.width < 1 || size.height < 1) {
-    fail(
-      SOURCE_NAME + " declares an impossible size " + size.width +
-      "x" + size.height
-    );
+  if (width < 1 || height < 1) {
+    die(IMAGE + " declares an impossible size " + width + "x" + height);
   }
 
   const outDir = process.env.MAKEFUN_OUTPUT_DIR || "/output";
-  const outPath = join(outDir, OUTPUT_NAME);
+  const outPath = join(outDir, IMAGE);
   mkdirSync(outDir, { recursive: true });
   writeFileSync(outPath, bytes);
 
-  // Read the copy back and prove it matches the source byte for byte.
-  const written = readFileSync(outPath);
-  if (!written.equals(bytes)) {
-    fail("wrote " + outPath + " but the copy does not match " + SOURCE_NAME);
+  // Prove the copy matches the source, byte for byte.
+  if (!readFileSync(outPath).equals(bytes)) {
+    die("wrote " + outPath + " but the copy does not match " + IMAGE);
   }
 
   console.log(
     "wrote " + outPath + " (" + bytes.length + " bytes, " +
-    size.width + "x" + size.height + ")"
+    width + "x" + height + ")"
   );
 }
 
-main();
+run();
